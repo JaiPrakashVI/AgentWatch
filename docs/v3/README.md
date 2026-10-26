@@ -14,6 +14,7 @@ AgentWatch v3 is an instrument that reconstructs, explains, compares, replays an
 8. [API.md](API.md): the `/api/v3` reference.
 9. [metrics/README.md](metrics/README.md): definitions of every exposed metric.
 10. [IMPLEMENTATION_STATE.md](IMPLEMENTATION_STATE.md): what is done, known limitations, next steps.
+11. [WITNESS_ATTESTATION.md](WITNESS_ATTESTATION.md): Merkle inclusion proofs, signed audit tokens, hash commitments and crypto-shredding for third-party audits; format, threat model and limits.
 
 ## ADR index
 
