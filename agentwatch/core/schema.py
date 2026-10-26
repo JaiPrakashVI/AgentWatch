@@ -70,6 +70,9 @@ class EventType(str, Enum):
     STYLE_FINGERPRINT_COMPUTED = "reasoning.style_fingerprint"
     STYLE_SWAP_DETECTED = "reasoning.style_swap"
 
+    # LLM intent
+    AGENT_INTENT = "agent.intent"
+
     # Generic
     CUSTOM = "custom"
 
