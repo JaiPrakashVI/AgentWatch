@@ -27,7 +27,7 @@ try:
     import openai  # noqa: F401
 
     _OPENAI_AVAILABLE = True
-except Exception:  # noqa: BLE001,S110 - optional dependency not installed
+except Exception:  # noqa: BLE001,S110  # nosec B110 — optional dependency not installed
     pass  # pragma: no cover - defensive import
 
 
@@ -41,7 +41,7 @@ def _is_openrouter_client(client: Any) -> bool:
         if base_url:
             base_url_str = str(base_url)
             return any(domain in base_url_str for domain in _OPENROUTER_BASE_URLS)
-    except Exception:  # noqa: BLE001,S110 - malformed client, assume not OpenRouter
+    except Exception:  # noqa: BLE001,S110  # nosec B110 — malformed client, assume not OpenRouter
         pass
     return False
 
@@ -50,12 +50,12 @@ def _dump(obj: Any) -> Any:
     if hasattr(obj, "model_dump"):
         try:
             return obj.model_dump(mode="json")
-        except Exception:  # noqa: BLE001,S110 - fall through to generic conversion
+        except Exception:  # noqa: BLE001,S110  # nosec B110 — fall through to generic conversion
             pass
     if hasattr(obj, "__dict__"):
         try:
             return {k: _dump(v) for k, v in obj.__dict__.items() if not k.startswith("_")}
-        except Exception:  # noqa: BLE001,S110 - fall through to generic conversion
+        except Exception:  # noqa: BLE001,S110  # nosec B110 — fall through to generic conversion
             pass
     if isinstance(obj, (list, tuple)):
         return [_dump(v) for v in obj]
@@ -63,7 +63,7 @@ def _dump(obj: Any) -> Any:
         return {k: _dump(v) for k, v in obj.items()}
     try:
         return obj
-    except Exception:  # noqa: BLE001,S110 - fall through to repr
+    except Exception:  # noqa: BLE001,S110  # nosec B110 — fall through to repr
         return repr(obj)
 
 
@@ -93,7 +93,7 @@ def _extract_tool_calls(response: Any) -> list[ToolCallData]:
                     import json
 
                     arguments = json.loads(args_str)
-                except Exception:  # noqa: BLE001,S110 - invalid JSON, preserve raw
+                except Exception:  # noqa: BLE001,S110  # nosec B110 — invalid JSON, preserve raw
                     arguments = {"raw": args_str}
                 tool_calls.append(
                     ToolCallData(
@@ -102,7 +102,7 @@ def _extract_tool_calls(response: Any) -> list[ToolCallData]:
                         arguments=arguments,
                     )
                 )
-    except Exception:  # noqa: BLE001,S110 - malformed response, return empty
+    except Exception:  # noqa: BLE001,S110  # nosec B110 — malformed response, return empty
         pass
     return tool_calls
 
@@ -118,7 +118,7 @@ def _extract_usage(response: Any) -> TokenUsage | None:
             completion_tokens=getattr(usage, "completion_tokens", 0),
             total_tokens=getattr(usage, "total_tokens", 0),
         )
-    except Exception:  # noqa: BLE001,S110 - malformed usage, return None
+    except Exception:  # noqa: BLE001,S110  # nosec B110 — malformed usage, return None
         return None
 
 
@@ -128,7 +128,7 @@ def _get_model_name(response: Any, kwargs: dict[str, Any]) -> str:
         model = getattr(response, "model", None)
         if model:
             return str(model)
-    except Exception:  # noqa: BLE001,S110 - malformed response, fall back to request
+    except Exception:  # noqa: BLE001,S110  # nosec B110 — malformed response, fall back to request
         pass
     return str(kwargs.get("model", "unknown"))
 
@@ -389,7 +389,7 @@ def _preview_prompt(messages: Any) -> str | None:
                     content = msg.get("content")
                     if content and isinstance(content, str):
                         return content[:500]
-    except Exception:  # noqa: BLE001,S110 - malformed messages, return None
+    except Exception:  # noqa: BLE001,S110  # nosec B110 — malformed messages, return None
         pass
     return None
 

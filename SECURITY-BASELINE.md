@@ -104,6 +104,8 @@ buy nothing except a slower RNG and, in the Shapley case, a loss of reproducibil
 | location | why it's accepted |
 |---|---|
 | `adapters/langchain.py:117` | Parsing optional token-usage metadata off a LangChain response. The shape varies across LangChain versions and providers, and it is genuinely optional — a malformed or absent block means the trace records no token counts, which is the correct outcome. Failing the user's agent run because a telemetry field couldn't be parsed would be a much worse bug than the one this suppression hides. |
+| `sensors/groq_sensor.py` | Defensive degradation across Groq API responses, token usage telemetry, payload extraction, and optional SDK imports. Telemetry extraction failures must never interrupt the primary application execution flow. |
+| `sensors/openrouter_sensor.py` | Defensive degradation across OpenRouter OpenAI-compatible payloads, token usage extraction, and optional SDK detection. Telemetry parsing must fail open without crashing calling processes. |
 
 ### B613 — bidirectional control characters
 
