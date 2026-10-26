@@ -122,6 +122,7 @@ class LangChainNormalizer(Normalizer):
             usage = (
                 (ep.get("llm_output") or {}).get("token_usage")
                 or (ep.get("llm_output") or {}).get("usage")
+                or ep.get("token_usage")
                 or {}
             )
             b.resources = {
