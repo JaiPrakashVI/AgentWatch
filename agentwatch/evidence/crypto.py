@@ -21,6 +21,24 @@ class CryptoUnavailableError(RuntimeError):
     pass
 
 
+class CryptoImportError(CryptoUnavailableError, ImportError):
+    """The optional ``cryptography`` package is missing.
+
+    Both a ``CryptoUnavailableError`` (existing handlers keep working) and an ``ImportError``.
+    """
+
+
+def require_cryptography(feature: str) -> None:
+    """Raise ``CryptoImportError`` with install instructions when ``cryptography`` is absent."""
+    try:
+        import cryptography  # noqa: F401
+    except ImportError as exc:
+        raise CryptoImportError(
+            f"{feature} requires the 'cryptography' package. "
+            "Install it with: pip install 'agentwatch-ai[crypto]'"
+        ) from exc
+
+
 def _aesgcm(key: bytes):  # type: ignore[no-untyped-def]
     try:
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM

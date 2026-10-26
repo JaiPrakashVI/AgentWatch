@@ -7,13 +7,13 @@ Pure standard library (Ponytail: Ultra).
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
-from typing import Any
 import uuid
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any
 
 
 def _canonical_json(data: Any) -> str:
