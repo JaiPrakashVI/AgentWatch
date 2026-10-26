@@ -7,15 +7,54 @@ It records raw callback payloads only; pairing and mapping happen in the normali
 
 from __future__ import annotations
 
+import functools
+import logging
+import threading
+import time
+from collections.abc import Callable
 from typing import Any
 
 from agentwatch.evidence.canonical import to_jsonable
 from agentwatch.sensors.base import ObservationSink, Sensor
 
+logger = logging.getLogger(__name__)
+
 try:  # inherit from the real base class when LangChain is installed
     from langchain_core.callbacks import BaseCallbackHandler as _Base
-except ImportError:  # pragma: no cover - optional dependency
+
+    LANGCHAIN_AVAILABLE = True
+except ImportError:  # optional dependency
     _Base = object  # type: ignore[assignment,misc]
+    LANGCHAIN_AVAILABLE = False
+
+_INSTALL_HINT = (
+    "langchain-core is required to attach AgentWatchLangChainSensor to a real LangChain or "
+    'LangGraph run. Install it with: pip install "agentwatch-ai[langchain]"'
+)
+
+
+def require_langchain() -> None:
+    """Raise a clear ImportError when ``langchain-core`` is not installed.
+
+    Importing this module and constructing the sensor never need LangChain (the handler is
+    duck-typed); call this when you are about to hand the sensor to a real LangChain run.
+    """
+    if not LANGCHAIN_AVAILABLE:
+        raise ImportError(_INSTALL_HINT)
+
+
+def _guarded(fn: Callable[..., None]) -> Callable[..., None]:
+    """Callbacks run inside the user's chain: swallow and count anything that goes wrong."""
+
+    @functools.wraps(fn)
+    def wrapper(self: AgentWatchLangChainSensor, *args: Any, **kwargs: Any) -> None:
+        try:
+            fn(self, *args, **kwargs)
+        except Exception:
+            self.ctx.errors += 1
+            logger.debug("langchain callback %s failed", fn.__name__, exc_info=True)
+
+    return wrapper
 
 
 def _safe(value: Any) -> Any:
@@ -23,6 +62,41 @@ def _safe(value: Any) -> Any:
         return to_jsonable(value)
     except (TypeError, ValueError):
         return repr(value)
+
+
+def _usage_from(obj: Any) -> dict[str, Any] | None:
+    if isinstance(obj, dict):
+        return obj
+    return None
+
+
+def _token_usage(response: Any) -> dict[str, int] | None:
+    """Best-effort token counts from ``llm_output`` or message ``usage_metadata``."""
+    llm_output = getattr(response, "llm_output", None)
+    raw = None
+    if isinstance(llm_output, dict):
+        raw = _usage_from(llm_output.get("token_usage") or llm_output.get("usage"))
+    if raw is None:
+        total_in = total_out = 0
+        found = False
+        for batch in getattr(response, "generations", None) or []:
+            for g in batch:
+                meta = _usage_from(getattr(getattr(g, "message", None), "usage_metadata", None))
+                if meta:
+                    found = True
+                    total_in += int(meta.get("input_tokens") or 0)
+                    total_out += int(meta.get("output_tokens") or 0)
+        if found:
+            return {"input_tokens": total_in, "output_tokens": total_out}
+        return None
+    tin = raw.get("prompt_tokens", raw.get("input_tokens"))
+    tout = raw.get("completion_tokens", raw.get("output_tokens"))
+    out = {}
+    if isinstance(tin, int):
+        out["input_tokens"] = tin
+    if isinstance(tout, int):
+        out["output_tokens"] = tout
+    return out or None
 
 
 def _generations(response: Any) -> dict[str, Any]:
@@ -40,6 +114,9 @@ def _generations(response: Any) -> dict[str, Any]:
     llm_output = getattr(response, "llm_output", None)
     if llm_output:
         out["llm_output"] = _safe(llm_output)
+    usage = _token_usage(response)
+    if usage:
+        out["token_usage"] = usage
     return out
 
 
@@ -65,6 +142,9 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         Sensor.__init__(self, sink, tenant_id)
         # run_id -> root run_id, built only from parent_run_id values LangChain declared
         self._root_of: dict[str, str] = {}
+        # run_id -> monotonic start time, for per-run duration
+        self._started: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def _emit(
         self,
@@ -74,6 +154,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         parent_run_id: Any,
         **extra_ids: Any,
     ) -> None:
+        terminal = callback.endswith(("_end", "_error"))
         ids = {
             "run_id": str(run_id) if run_id else None,
             "parent_run_id": str(parent_run_id) if parent_run_id else None,
@@ -82,13 +163,25 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         # root of the declared parent chain; omitted when the chain is not fully known
         rid, pid = ids["run_id"], ids["parent_run_id"]
         if rid:
-            root = rid if pid is None else self._root_of.get(pid)
-            if root is not None:
-                self._root_of[rid] = root
-                ids["root_run_id"] = root
+            with self._lock:
+                root = rid if pid is None else self._root_of.get(pid)
+                if root is not None:
+                    ids["root_run_id"] = root
+                if terminal:
+                    # a run's state is released on its terminal callback so long-lived
+                    # sensors do not grow without bound
+                    self._root_of.pop(rid, None)
+                    t0 = self._started.pop(rid, None)
+                    if t0 is not None:
+                        payload["duration_ms"] = round((time.monotonic() - t0) * 1000, 3)
+                elif callback.endswith("_start"):
+                    if root is not None:
+                        self._root_of[rid] = root
+                    self._started[rid] = time.monotonic()
         self.ctx.emit(f"langchain.{callback}", payload, declared_ids=ids)
 
     # LLMs
+    @_guarded
     def on_llm_start(
         self,
         serialized: dict[str, Any],
@@ -113,6 +206,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             parent_run_id,
         )
 
+    @_guarded
     def on_chat_model_start(
         self,
         serialized: dict[str, Any],
@@ -144,11 +238,13 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             parent_run_id,
         )
 
+    @_guarded
     def on_llm_end(
         self, response: Any, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
         self._emit("llm_end", _generations(response), run_id, parent_run_id)
 
+    @_guarded
     def on_llm_error(
         self, error: BaseException, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
@@ -160,6 +256,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         )
 
     # chains / graphs
+    @_guarded
     def on_chain_start(
         self,
         serialized: dict[str, Any],
@@ -184,11 +281,13 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             parent_run_id,
         )
 
+    @_guarded
     def on_chain_end(
         self, outputs: Any, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
         self._emit("chain_end", {"outputs": _safe(outputs)}, run_id, parent_run_id)
 
+    @_guarded
     def on_chain_error(
         self, error: BaseException, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
@@ -200,6 +299,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         )
 
     # tools
+    @_guarded
     def on_tool_start(
         self,
         serialized: dict[str, Any],
@@ -226,6 +326,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             tool_call_id=kw.get("tool_call_id"),
         )
 
+    @_guarded
     def on_tool_end(
         self, output: Any, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
@@ -233,6 +334,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             "tool_end", {"output": _safe(getattr(output, "content", output))}, run_id, parent_run_id
         )
 
+    @_guarded
     def on_tool_error(
         self, error: BaseException, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
@@ -244,6 +346,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         )
 
     # retrievers
+    @_guarded
     def on_retriever_start(
         self,
         serialized: dict[str, Any],
@@ -267,11 +370,13 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             parent_run_id,
         )
 
+    @_guarded
     def on_retriever_end(
         self, documents: Any, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
         self._emit("retriever_end", {"documents": _documents(documents)}, run_id, parent_run_id)
 
+    @_guarded
     def on_retriever_error(
         self, error: BaseException, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
@@ -283,6 +388,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
         )
 
     # agents
+    @_guarded
     def on_agent_action(
         self, action: Any, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
@@ -297,6 +403,7 @@ class AgentWatchLangChainSensor(Sensor, _Base):  # type: ignore[misc,valid-type]
             parent_run_id,
         )
 
+    @_guarded
     def on_agent_finish(
         self, finish: Any, *, run_id: Any, parent_run_id: Any = None, **kw: Any
     ) -> None:
